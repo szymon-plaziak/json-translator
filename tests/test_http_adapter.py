@@ -8,9 +8,8 @@ import json
 import httpx
 import pytest
 
-from robotctl.adapters.http import HttpRobotAdapter
-from robotctl.config import Settings
-from robotctl.schemas import ActionStep
+from robotctl.core import ActionStep, Settings
+from robotctl.runtime import HttpRobotAdapter
 
 
 def make_settings(**overrides: object) -> Settings:

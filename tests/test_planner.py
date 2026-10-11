@@ -8,10 +8,8 @@ from typing import Any
 
 import pytest
 
-from robotctl.config import Settings
-from robotctl.planner import LLMPlanner, PlanParseError, PlannerError, parse_plan_response
-from robotctl.profile import ProfileManager, parse_profile
-from robotctl.schemas import Pose, Telemetry
+from robotctl.core import Pose, ProfileManager, Settings, Telemetry, parse_profile
+from robotctl.runtime import LLMPlanner, PlanParseError, PlannerError, parse_plan_response
 
 from helpers import make_profile, make_profiles
 

@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import httpx
 
-from robotctl.api import create_app
-from robotctl.planner import LLMPlanner
+from robotctl.runtime import LLMPlanner
+from robotctl.service import create_app
 
 from helpers import (
     FakeAdapter,
@@ -68,7 +68,7 @@ async def test_commands_require_a_profile(settings):
             pass
     # separate app with an EMPTY profile manager
     async with stack(settings, FakePlanner()) as (executor, _adapter, monitor):
-        from robotctl.profile import ProfileManager
+        from robotctl.core import ProfileManager
 
         async with app_client(executor, monitor, settings, None, ProfileManager("")) as client:
             response = await client.post("/commands", json={"command": "go"})
@@ -113,7 +113,7 @@ async def test_profile_upload_rejects_invalid_json(settings):
 
 async def test_profile_get_404_when_empty(settings):
     async with stack(settings, FakePlanner()) as (executor, _adapter, monitor):
-        from robotctl.profile import ProfileManager
+        from robotctl.core import ProfileManager
 
         async with app_client(executor, monitor, settings, None, ProfileManager("")) as client:
             response = await client.get("/profile")

@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from robotctl.schemas import ActionStep, PlanResponse, describe_step
+from robotctl.core import ActionStep, PlanResponse, describe_step
 
 
 def plan_json(**overrides: object) -> dict:
@@ -84,7 +84,7 @@ def test_describe_step_renders_generic_details():
 
 
 def test_optional_telemetry_fields_default_to_none():
-    from robotctl.schemas import Telemetry
+    from robotctl.core import Telemetry
 
     snapshot = Telemetry(timestamp=1.0, monotonic=0.0, connected=True, motion_status="idle")
     assert snapshot.pose is None

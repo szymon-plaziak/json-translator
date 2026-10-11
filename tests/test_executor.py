@@ -6,9 +6,8 @@ import asyncio
 
 import pytest
 
-from robotctl.executor import CommandStatus, ExecutorBusy
-from robotctl.profile import ProfileManager
-from robotctl.schemas import PlanResponse
+from robotctl.core import PlanResponse, ProfileManager
+from robotctl.runtime import CommandStatus, ExecutorBusy
 
 from helpers import (
     FakeAdapter,

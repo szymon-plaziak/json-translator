@@ -7,7 +7,7 @@ The NoDecode annotation routes the raw string through _parse_csv instead.
 
 from __future__ import annotations
 
-from robotctl.config import Settings
+from robotctl.core import Settings
 
 
 def test_risky_actions_unset_defaults_to_empty(monkeypatch):

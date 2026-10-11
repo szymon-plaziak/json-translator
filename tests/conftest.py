@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from robotctl.config import Settings
+from robotctl.core import Settings
 
 
 @pytest.fixture

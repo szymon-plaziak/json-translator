@@ -173,7 +173,7 @@ Statusy końcowe: `completed` / `failed` (błąd kroku lub telemetrii) / `reject
 
 Brak bazy danych — stan komend w pamięci, log interakcji z LLM jako JSONL (`logs/llm.jsonl`, widoczny przez `GET /logs`). Całość nasłuchuje **tylko na 127.0.0.1** (loopback) — z zewnątrz nieosiągalne.
 
-Struktura kodu (`src/robotctl/`): `config.py` (ustawienia) → `schemas.py` (uniwersalna koperta) → `profile.py` (profil robota, walidacja, generowanie promptu i schemy) → `planner.py` (rozmowa z LLM) → `safety.py` (bramka walidacji) → `executor.py` (wykonanie krok po kroku) → `adapters/http.py` (most do robota) → `monitor.py` (telemetria) → `api.py` (endpointy REST) → `cli.py` (start serwisu).
+Struktura kodu (`src/robotctl/`): `core.py` (ustawienia, uniwersalna koperta, profil robota z walidacją, generowanie promptu i schemy, bramka bezpieczeństwa) → `runtime.py` (most HTTP do robota, telemetria, rozmowa z LLM, wykonanie krok po kroku) → `service.py` (endpointy REST + start serwisu).
 
 ---
 

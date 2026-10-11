@@ -6,14 +6,14 @@ import json
 
 import pytest
 
-from robotctl.profile import (
+from robotctl.core import (
     ActionStep,
     ProfileError,
     ProfileManager,
+    PlanResponse,
     parse_do_action,
     parse_profile,
 )
-from robotctl.schemas import PlanResponse
 
 from helpers import make_profile, make_profiles, step
 
