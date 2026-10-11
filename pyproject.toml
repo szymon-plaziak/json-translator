@@ -1,0 +1,35 @@
+[project]
+name = "robotctl"
+version = "0.1.0"
+description = "LLM-driven robot control via a terminal CLI and local REST API (simulation-first)."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=1.40",
+    "fastapi>=0.111",
+    "uvicorn>=0.30",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+robotctl = "robotctl.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/robotctl"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]

@@ -1,0 +1,160 @@
+{
+  "profile_version": 1,
+  "robot": {
+    "name": "Rover-Sim",
+    "description": "four-wheeled rover on a 10x10 metre test floor with walls and obstacles; drives and turns in place"
+  },
+  "actions": [
+    {
+      "action": "move",
+      "description": "drive forward in a straight line by the given distance (relative to current heading)",
+      "params": [
+        {
+          "name": "meters",
+          "type": "float",
+          "description": "distance to drive forward",
+          "unit": "m",
+          "min": 0.0,
+          "max": 5.0,
+          "required": true,
+          "default": null
+        },
+        {
+          "name": "speed_mps",
+          "type": "float",
+          "description": "driving speed",
+          "unit": "m/s",
+          "min": 0.0,
+          "max": 1.0,
+          "required": false,
+          "default": 0.3
+        }
+      ]
+    },
+    {
+      "action": "turn",
+      "description": "rotate in place by a relative angle; positive degrees turn counter-clockwise (left), negative degrees turn clockwise (right)",
+      "params": [
+        {
+          "name": "degrees",
+          "type": "float",
+          "description": "relative rotation angle (positive = left, negative = right)",
+          "unit": "deg",
+          "min": -180.0,
+          "max": 180.0,
+          "required": true,
+          "default": null
+        },
+        {
+          "name": "speed_dps",
+          "type": "float",
+          "description": "rotation speed",
+          "unit": "deg/s",
+          "min": 0.0,
+          "max": 120.0,
+          "required": false,
+          "default": 45
+        }
+      ]
+    },
+    {
+      "action": "stop",
+      "description": "halt all motion immediately",
+      "params": []
+    },
+    {
+      "action": "wait",
+      "description": "stay idle for the given number of seconds",
+      "params": [
+        {
+          "name": "seconds",
+          "type": "float",
+          "description": "how long to wait",
+          "unit": "s",
+          "min": 0.0,
+          "max": 10.0,
+          "required": true,
+          "default": null
+        }
+      ]
+    },
+    {
+      "action": "pick",
+      "description": "extend the robot arm and pick up the nearest crate; the gripper reaches 0.8 m from the rover centre, so drive close to a crate first; fails if no crate is within reach or the gripper is already full",
+      "params": []
+    },
+    {
+      "action": "drop",
+      "description": "extend the robot arm and gently place the carried crate on the ground just ahead of the rover; fails if the gripper is empty",
+      "params": []
+    }
+  ],
+  "examples": [
+    {
+      "version": 1,
+      "mode": "action",
+      "steps": [
+        {
+          "action": "move",
+          "meters": 0.5
+        }
+      ]
+    },
+    {
+      "version": 1,
+      "mode": "plan",
+      "steps": [
+        {
+          "action": "move",
+          "meters": 1
+        },
+        {
+          "action": "turn",
+          "degrees": 90
+        },
+        {
+          "action": "move",
+          "meters": 1,
+          "speed_mps": 0.5
+        }
+      ]
+    },
+    {
+      "version": 1,
+      "mode": "plan",
+      "steps": [
+        {
+          "action": "turn",
+          "degrees": -90
+        },
+        {
+          "action": "move",
+          "meters": 2
+        },
+        {
+          "action": "stop"
+        }
+      ]
+    },
+    {
+      "version": 1,
+      "mode": "plan",
+      "steps": [
+        {
+          "action": "move",
+          "meters": 1.5
+        },
+        {
+          "action": "pick"
+        },
+        {
+          "action": "turn",
+          "degrees": 180
+        },
+        {
+          "action": "drop"
+        }
+      ]
+    }
+  ]
+}

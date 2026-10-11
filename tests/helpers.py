@@ -1,0 +1,219 @@
+"""Shared test helpers: robot profile, fake adapter/planner, stack assembly."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
+
+from robotctl.adapters.base import AdapterError
+from robotctl.executor import Executor
+from robotctl.monitor import StateMonitor
+from robotctl.planner import PlannerError
+from robotctl.profile import ProfileManager, RobotProfile, parse_profile
+from robotctl.schemas import ActionStep, PlanResponse, Pose, Telemetry
+
+if TYPE_CHECKING:
+    from robotctl.adapters.base import RobotAdapter
+    from robotctl.config import Settings
+    from robotctl.executor import Command, CommandStatus
+
+
+# ---------------------------------------------------------------------------
+# Robot profile factory — the stand-in for an uploaded profile.
+# ---------------------------------------------------------------------------
+
+
+def make_profile() -> RobotProfile:
+    """A small universal test profile: move / turn / wait with one example."""
+    return parse_profile(
+        {
+            "profile_version": 1,
+            "robot": {"name": "Test Rover", "description": "two-wheeled test robot"},
+            "actions": [
+                {
+                    "action": "move",
+                    "description": "drive forward or backward",
+                    "params": [
+                        {"name": "distance_m", "type": "float", "unit": "m", "min": 0, "max": 10, "required": True},
+                        {"name": "speed_mps", "type": "float", "unit": "m/s", "min": 0, "max": 2, "default": 0.5},
+                    ],
+                },
+                {
+                    "action": "turn",
+                    "description": "rotate in place",
+                    "params": [
+                        {"name": "angle_deg", "type": "float", "unit": "deg", "min": -180, "max": 180, "required": True},
+                        {"name": "speed_dps", "type": "float", "unit": "deg/s", "min": 0, "max": 180, "default": 90},
+                    ],
+                },
+                {
+                    "action": "wait",
+                    "description": "pause",
+                    "params": [
+                        {"name": "seconds", "type": "float", "unit": "s", "min": 0, "max": 30, "required": True},
+                    ],
+                },
+            ],
+            "examples": [
+                {
+                    "version": 1,
+                    "mode": "plan",
+                    "steps": [
+                        {"action": "turn", "angle_deg": 90},
+                        {"action": "move", "distance_m": 0.5},
+                    ],
+                }
+            ],
+        }
+    )
+
+
+def make_profiles(profile: RobotProfile | None = None) -> ProfileManager:
+    """In-memory profile manager preloaded with the test profile."""
+    manager = ProfileManager(path="")
+    manager.set(profile if profile is not None else make_profile())
+    return manager
+
+
+def step(action: str, **params: object) -> ActionStep:
+    return ActionStep.model_validate({"action": action, **params})
+
+
+def action_plan(*steps: object) -> PlanResponse:
+    # dicts are coerced to ActionStep by pydantic
+    return PlanResponse(version=1, mode="action", steps=list(steps))  # type: ignore[arg-type]
+
+
+def multi_plan(*steps: object) -> PlanResponse:
+    return PlanResponse(version=1, mode="plan", steps=list(steps))  # type: ignore[arg-type]
+
+
+class FakePlanner:
+    """PlanProvider double: returns a canned plan (or raises PlannerError)."""
+
+    def __init__(self, plan: PlanResponse | None = None, error: str | None = None) -> None:
+        self.canned = plan
+        self.error = error
+        self.calls: list[str] = []
+
+    async def plan(self, command: str) -> PlanResponse:
+        self.calls.append(command)
+        if self.error is not None:
+            raise PlannerError(self.error)
+        assert self.canned is not None, "FakePlanner needs a plan or an error"
+        return self.canned
+
+
+class FakeAdapter:
+    """RobotAdapter double: records executed steps, injects failures on demand."""
+
+    def __init__(
+        self,
+        *,
+        fail_on: tuple[str, ...] = (),
+        hang_on: tuple[str, ...] = (),
+        execute_delay_s: float = 0.0,
+    ) -> None:
+        self._connected = False
+        self._link_up = True  # False simulates a dead/stale telemetry link
+        self._halted = False
+        self.executed: list[ActionStep] = []
+        self.stops = 0
+        self.fail_on = set(fail_on)
+        self.hang_on = set(hang_on)
+        self.execute_delay_s = execute_delay_s
+
+    # -- RobotAdapter API ------------------------------------------------------
+
+    async def connect(self) -> None:
+        self._connected = True
+
+    async def disconnect(self) -> None:
+        self._connected = False
+
+    async def execute(self, action: ActionStep) -> None:
+        self.executed.append(action)
+        if action.action in self.hang_on:
+            await asyncio.sleep(60)  # only the executor's wait_for ends this
+        if self.execute_delay_s > 0:
+            await asyncio.sleep(self.execute_delay_s)
+        if action.action in self.fail_on:
+            raise AdapterError(f"simulated failure of '{action.action}'")
+
+    async def stop(self) -> None:
+        self._halted = True
+        self.stops += 1
+
+    def telemetry(self) -> Telemetry | None:
+        if not self._connected:
+            return None
+        if not self._link_up:
+            return Telemetry(
+                timestamp=time.time(),
+                monotonic=time.monotonic() - 99,  # hopelessly stale
+                connected=False,
+                motion_status="error",
+                pose=self._pose(),
+            )
+        return Telemetry(
+            timestamp=time.time(),
+            monotonic=time.monotonic(),
+            connected=True,
+            motion_status="idle",
+            pose=self._pose(),
+            battery_pct=100.0,
+        )
+
+    # -- test controls -----------------------------------------------------------
+
+    def _pose(self) -> Pose:
+        return Pose(x_m=0.0, y_m=0.0, heading_deg=0.0)
+
+    def drop_link(self) -> None:
+        self._link_up = False
+
+    @property
+    def halted(self) -> bool:
+        return self._halted
+
+
+@asynccontextmanager
+async def stack(
+    settings: "Settings",
+    planner: FakePlanner,
+    adapter: "RobotAdapter | None" = None,
+    profiles: ProfileManager | None = None,
+) -> AsyncIterator[tuple[Executor, RobotAdapter, StateMonitor]]:
+    """Connected adapter + started monitor + executor, torn down safely."""
+    adapter = adapter if adapter is not None else FakeAdapter()
+    profiles = profiles if profiles is not None else make_profiles()
+    await adapter.connect()
+    monitor = StateMonitor(adapter, settings.telemetry_max_age_s)
+    monitor.start()
+    await monitor.wait_for_telemetry(timeout_s=5.0)
+    executor = Executor(settings, adapter, monitor, planner, profiles)
+    try:
+        yield executor, adapter, monitor
+    finally:
+        executor.stop()
+        await monitor.stop()
+        await adapter.disconnect()
+
+
+async def wait_for_status(
+    command: "Command",
+    *statuses: "CommandStatus",
+    timeout_s: float = 5.0,
+) -> None:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if command.status in statuses:
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError(
+        f"timed out waiting for {[s.value for s in statuses]}; "
+        f"status is {command.status.value} (error: {command.error})"
+    )
