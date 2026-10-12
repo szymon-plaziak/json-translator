@@ -26,8 +26,7 @@ cp .env.example .env   # then set LLM_BASE_URL, LLM_API_KEY, LLM_MODEL
 uv run robotctl        # serves the API until Ctrl+C / SIGTERM
 ```
 
-Flags: `--host <addr>`, `--port <int>` (override `API_HOST`/`API_PORT`),
-`--version`.
+Host/port come from `API_HOST`/`API_PORT` in `.env`.
 
 Startup order: set `LLM_*` in `.env`, upload a robot profile, optionally set
 `ROBOT_BASE_URL` when the robot is online. Without a robot the service still
@@ -112,11 +111,11 @@ Rules:
   missing required parameter.
 
 **Universal envelope (fixed by the core):** `{"version": 1, "mode": "action"
-| "plan" | "clarification", "steps": [...], "question", "options"}` —
-`mode: "action"` = exactly one step; `"plan"` = 2–8 ordered steps;
-`"clarification"` = the LLM asks a question (`options` optional). The LLM is
-told to **split, not ask**: a request exceeding a single action's limits
-becomes a multi-step plan, not a clarification.
+| "plan", "steps": [...]}` — `mode: "action"` = exactly one step; `"plan"` =
+2–8 ordered steps. There is no clarification mode: the LLM is told to
+**decide, not ask**. A vague command gets the most reasonable interpretation
+with conservative values (smaller distances, slower speeds); a request
+exceeding a single action's limits becomes a multi-step plan.
 
 Upload endpoints:
 
@@ -133,19 +132,18 @@ profiles live in memory only.
 ### `POST /commands` — submit a command
 
 ```json
-{ "command": "lift the hook half a meter", "confirm": false }
+{ "command": "lift the hook half a meter" }
 ```
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `command` | string (1–500 chars) | Natural language, **or** a manual action `/do <action> [param …]` (parsed against the profile, no LLM call) |
-| `confirm` | bool, default `false` | Required `true` to approve plans containing risky actions (see below) |
+| `command` | string (1–500 chars) | Natural language; the LLM translates it into the robot's command language |
 
 Responses:
 
 - `202` → `{ "id": "<id>", "status": "planning" }`
 - `409` → another command is still running
-- `422` → invalid body, invalid `/do` action, or **no profile loaded**
+- `422` → invalid body or **no profile loaded**
   (upload one via `POST /profile` first)
 
 Execution is asynchronous: poll `GET /commands/{id}` until terminal.
@@ -155,26 +153,21 @@ Execution is asynchronous: poll `GET /commands/{id}` until terminal.
 Status lifecycle:
 
 ```
-planning → clarification | awaiting_confirmation | executing
+planning → executing
 executing → completed | failed | stopped | rejected
-clarification, awaiting_confirmation, rejected are terminal
+rejected is terminal
 ```
 
-- `clarification`: the model needs more information; `question` + `options`
-  are filled in. Send the user's answer as a **new** `POST /commands`
-  (recent clarifications are carried into the next planning call
-  automatically).
 - `rejected`: the safety layer refused the plan — unknown action for this
-  robot, out-of-range parameter, plan too long, or risky actions without
-  `confirm: true`.
+  robot, out-of-range parameter or a plan longer than 8 steps.
 - `failed`: a step failed against the robot (HTTP error, failure ack,
-  timeout) or telemetry went stale; the robot was told to stop.
+  timeout) or telemetry became unavailable; the robot was told to stop.
 - `stopped`: emergency-stopped via `POST /stop`.
 
-### `GET /state` — latest robot telemetry
+### `GET /state` — live robot telemetry
 
-`503` before the first telemetry sample arrives. Fields that the robot does
-not provide are `null`:
+Fetches the robot's telemetry endpoint on demand; `503` when the robot is
+unreachable. Fields that the robot does not provide are `null`:
 
 ```json
 {
@@ -191,13 +184,6 @@ not provide are `null`:
 }
 ```
 
-### `GET /logs?limit=N` — recent LLM interactions
-
-Last `N` (default 20, max 50) planner interactions: `command`, `attempts`,
-`response_format`, `duration_s`, `raw_answer`, `thinking` (only if the model
-sent any), `parsed` (the validated plan or `null`), `error`,
-`clarification_context`.
-
 ### `POST /stop` — emergency stop
 
 Cancels the running command immediately and fires a best-effort
@@ -210,7 +196,8 @@ Cancels the running command immediately and fires a best-effort
 { "ok": true, "adapter": "http", "robot_configured": true, "profile_loaded": true }
 ```
 
-`ok` is true only while fresh telemetry is arriving from the robot.
+`ok` is true only while the robot answers telemetry requests (each `/health`
+call performs a live fetch with a short timeout).
 
 ## Robot HTTP bridge (what your robot must expose)
 
@@ -218,7 +205,7 @@ Three endpoints on the robot side (paths configurable via `.env`):
 
 | Endpoint | Direction | Contract |
 | --- | --- | --- |
-| `GET /telemetry` | robot → controller | JSON snapshot. Required: `motion_status` (`idle` \| `moving` \| `turning` \| `stopped` \| `error`; unknown values are mapped to `error`). Optional: `pose: {x_m, y_m, heading_deg}`, `battery_pct`, `obstacle_distance_m`, `linear_speed_mps`, `angular_speed_dps`, `last_action_id`, `timestamp`, `connected`. Polled at `ROBOT_POLL_HZ` (default 5 Hz); the controller tolerates 3 consecutive failures before reporting a disconnect. |
+| `GET /telemetry` | robot → controller | JSON snapshot. Required: `motion_status` (`idle` \| `moving` \| `turning` \| `stopped` \| `error`; unknown values are mapped to `error`). Optional: `pose: {x_m, y_m, heading_deg}`, `battery_pct`, `obstacle_distance_m`, `linear_speed_mps`, `angular_speed_dps`, `last_action_id`, `timestamp`, `connected`. Fetched on demand (before planning, before every step, and for `/state` + `/health`), not polled in the background. |
 | `POST /command` | controller → robot | Body: one validated step JSON, e.g. `{"action": "lift", "meters": 0.5, "speed_mps": 0.2}` — exactly the format the profile teaches the LLM. The robot should respond **after the action finishes**: 2xx = success; 4xx/5xx = failure; a 2xx body with `"ok": false` or `"status": "failed"|"error"` is also treated as a failure (its `error` field is surfaced). |
 | `POST /stop` | controller → robot | Emergency halt, best effort (2 s timeout, result ignored). Empty `ROBOT_STOP_PATH` disables it. |
 
@@ -231,12 +218,12 @@ executor's `STEP_TIMEOUT_S`; both expiry paths stop the robot.
   and every step is validated against the uploaded profile (action exists,
   parameter types, required parameters, min/max). Invalid actions trigger an
   automatic corrective retry before anything reaches the robot.
-- Actions listed in `RISKY_ACTIONS` (`.env`, matched by profile action name)
-  require `"confirm": true` on the submitting request; without it the command
-  is `rejected`. With an empty `RISKY_ACTIONS` (the default) no confirmation
-  is ever required.
-- Fresh telemetry is required between steps; a stale or dead link aborts the
-  plan and the robot is told to stop.
+- Ambiguous commands are **decided, not asked about**: the model picks the
+  most reasonable interpretation with conservative values. Hard profile
+  limits (`min`/`max`, types, unknown actions) remain the safety net.
+- A reachable robot is required between steps: a telemetry fetch that fails
+  (or reports `connected: false`) aborts the plan and the robot is told to
+  stop.
 - `POST /stop` always works and bypasses the LLM.
 
 ## Configuration (`.env`)
@@ -246,10 +233,10 @@ executor's `STEP_TIMEOUT_S`; both expiry paths stop the robot.
 | `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` | OpenAI-compatible endpoint |
 | `LLM_RESPONSE_FORMAT` | `json_schema` (schema generated from the profile) → `json_object` → none fallback chain |
 | `LLM_EXTRA_BODY` | Extra request-body JSON (e.g. disable Qwen3 thinking) |
-| `LLM_LOG_FILE` | JSONL log of LLM interactions (empty disables) |
+| `LLM_TIMEOUT_S`, `LLM_MAX_TOKENS`, `LLM_TEMPERATURE` | LLM request tuning |
 | `ROBOT_BASE_URL` | Robot base URL (empty = no robot; fails safe) |
 | `ROBOT_COMMAND_PATH` / `ROBOT_TELEMETRY_PATH` / `ROBOT_STOP_PATH` | Bridge endpoints (defaults `/command`, `/telemetry`, `/stop`) |
-| `ROBOT_TIMEOUT_S`, `ROBOT_POLL_HZ` | Per-request timeout, telemetry polling rate |
+| `ROBOT_TIMEOUT_S` | Per-request timeout for robot command calls |
 | `PROFILE_PATH` | Where uploaded profiles persist (empty = memory only) |
-| `MAX_PLAN_STEPS`, `STEP_TIMEOUT_S`, `TELEMETRY_MAX_AGE_S` | Universal limits |
-| `RISKY_ACTIONS` | Profile action names requiring `"confirm": true` |
+| `STEP_TIMEOUT_S` | Per-step execution timeout (plan length is fixed at 8 steps) |
+| `API_HOST`, `API_PORT` | REST API bind address (loopback only by default) |

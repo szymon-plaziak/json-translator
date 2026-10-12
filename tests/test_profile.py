@@ -7,15 +7,13 @@ import json
 import pytest
 
 from robotctl.core import (
-    ActionStep,
     ProfileError,
     ProfileManager,
     PlanResponse,
-    parse_do_action,
     parse_profile,
 )
 
-from helpers import make_profile, make_profiles, step
+from helpers import make_profile, step
 
 
 # -- profile validation ----------------------------------------------------------
@@ -116,7 +114,7 @@ def test_example_with_out_of_range_param_is_rejected():
         parse_profile(data)
 
 
-# -- step checking (used by safety, planner parse, /do) ------------------------------
+# -- step checking (used by safety and the planner's retry loop) ---------------------
 
 
 def test_check_step_fills_defaults():
@@ -182,6 +180,7 @@ def test_response_schema_is_strict_and_covers_actions():
     assert schema["additionalProperties"] is False
     assert sorted(schema["properties"]) == sorted(schema["required"])
     assert schema["properties"]["version"] == {"enum": [1]}
+    assert schema["properties"]["mode"] == {"enum": ["action", "plan"]}
     items = schema["properties"]["steps"]["items"]
     action_names = [entry["properties"]["action"]["enum"][0] for entry in items["anyOf"]]
     assert action_names == ["move", "turn", "wait"]
@@ -226,55 +225,7 @@ def test_manager_without_path_keeps_profile_in_memory():
     assert manager.path is None
 
 
-# -- manual /do parsing against the profile --------------------------------------------
-
-
-def test_parse_do_move_with_optional_speed():
-    action = parse_do_action(["move", "0.5", "0.2"], make_profile())
-    assert action.action == "move"
-    assert action.params() == {"distance_m": 0.5, "speed_mps": 0.2}
-
-
-def test_parse_do_uses_positional_order():
-    action = parse_do_action(["turn", "-30"], make_profile())
-    assert action.action == "turn"
-    assert action.params() == {"angle_deg": -30.0, "speed_dps": 90.0}  # default filled
-
-
-def test_parse_do_rejects_unknown_action():
-    with pytest.raises(ValueError, match="unknown action 'grab'"):
-        parse_do_action(["grab", "1"], make_profile())
-
-
-@pytest.mark.parametrize(
-    "args",
-    [
-        [],
-        ["move"],
-        ["move", "0.5", "0.2", "1"],  # too many values
-        ["move", "abc"],  # not a number
-        ["wait"],  # required param missing
-    ],
-)
-def test_parse_do_rejects_bad_input(args):
-    with pytest.raises(ValueError):
-        parse_do_action(args, make_profile())
-
-
-def test_parse_do_rejects_out_of_range():
-    with pytest.raises(ValueError, match="above maximum"):
-        parse_do_action(["move", "99"], make_profile())
-
-
-def test_parse_do_no_params_action():
-    data = {
-        "profile_version": 1,
-        "robot": {"name": "Lamp"},
-        "actions": [{"action": "blink", "params": []}],
-        "examples": [{"version": 1, "mode": "action", "steps": [{"action": "blink"}]}],
-    }
-    profile = parse_profile(data)
-    assert parse_do_action(["blink"], profile).action == "blink"
+# -- envelope/profile flow --------------------------------------------------------------
 
 
 def test_profile_steps_flow_through_envelope():

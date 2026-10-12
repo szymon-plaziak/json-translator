@@ -75,13 +75,13 @@ Gdy przychodzi komenda w języku naturalnym, aplikacja buduje **prompt systemowy
 
 - **uniwersalna koperta odpowiedzi** (stała, wbudowana):
   ```json
-  {"version": 1, "mode": "action|plan|clarification", "steps": [...], "question": "...", "options": [...]}
+  {"version": 1, "mode": "action|plan", "steps": [...]}
   ```
   - `mode: "action"` — dokładnie jeden krok,
-  - `mode: "plan"` — 2–8 uporządkowanych kroków,
-  - `mode: "clarification"` — model pyta (np. "w lewo czy w prawo?") zamiast zgadywać. Istnieje zasada *"split, don't ask"*: jeśli żądanie przekracza limity jednego kroku, model ma je **podzielić na plan**, a nie dopytywać,
+  - `mode: "plan"` — 2–8 uporządkowanych kroków.
+  Nie ma trybu pytania o doprecyzowanie: model ma **decydować, nie dopytywać**. Niejednoznaczną komendę tłumaczy na najbardziej rozsądną interpretację z konserwatywnymi wartościami (mniejsze odległości, wolniejsze prędkości); jeśli żądanie przekracza limity jednego kroku, model ma je **podzielić na plan** ("split, don't ask"),
 - **sekcja profilu**: nazwa robota, słownik akcji z limitami ("używaj WYŁĄCZNIE tych akcji") oraz **Twoje przykłady wklejone dosłownie** ("naśladuj ten format"),
-- **aktualna telemetria** (z robota): pozycja, bateria, status — model ma podstawować decyzje tylko na realnych danych, nigdy niczego nie wymyślać.
+- **aktualna telemetria** (z robota, pobrana na żądanie): pozycja, bateria, status — model ma podstawować decyzje tylko na realnych danych, nigdy niczego nie wymyślać.
 
 Dodatkowo aplikacja wysyła do modelu **JSON Schema wygenerowaną dynamicznie z profilu** (tzw. structured output) — serwer modelu jest *wymuszany* formatem, więc szansa na złą odpowiedź spada niemal do zera. Jeśli serwer nie obsługuje tej funkcji, jest automatyczny fallback: `json_schema` → `json_object` → sam prompt.
 
@@ -93,14 +93,12 @@ LLM nigdy nie trafia do robota bezpośrednio. Każda odpowiedź przechodzi:
 
 | Warstwa | Co sprawdza | Co się dzieje przy błędzie |
 |---|---|---|
-| **1. Parser** | Czy odpowiedź to w ogóle JSON? Czy ma poprawną kopertę (wersja, tryb, liczba kroków)? | Automatyczna prośba o korektę (do 2 prób na format) |
+| **1. Parser** | Czy odpowiedź to w ogóle JSON? Czy ma poprawną kopertę (wersja, tryb, liczba kroków)? | Automatyczna prośba o korektę w następnym wariantie (łańcuch `json_schema` → `json_object` → sam prompt, po jednej próbie na wariant) |
 | **2. Walidacja profilu** (przy parsowaniu) | Czy akcje istnieją w profilu? Czy parametry są w zakresach? | Retry z komunikatem "ta akcja nie istnieje dla tego robota, użyj: …" |
-| **3. Warstwa bezpieczeństwa** (deterministyczna, bez AI) | To samo jeszcze raz + nieznane parametry + akcje z `RISKY_ACTIONS` wymagają `"confirm": true` | Komenda `rejected` — do robota nie wychodzi nic |
-| **4. Wykonawca** | Świeża telemetria między krokami, timeout na każdy krok, odczyt od robota | Bezpieczny stop + status `failed` |
+| **3. Warstwa bezpieczeństwa** (deterministyczna, bez AI) | To samo jeszcze raz + nieznane parametry + limit długości planu | Komenda `rejected` — do robota nie wychodzi nic |
+| **4. Wykonawca** | Telemetria dostępna między krokami, timeout na każdy krok, odczyt od robota | Bezpieczny stop + status `failed` |
 
 I niezależnie od tego wszystkiego: **`POST /stop` przerywa wszystko natychmiast**, omijając LLM.
-
-Efekt na przykładzie: gdy `RISKY_ACTIONS=` jest puste, nic nie wymaga potwierdzenia. Jeśli ustawisz `RISKY_ACTIONS=lift`, to każda komenda zawierająca "lift" dostanie status `rejected`, chyba że aplikacja-klient wyśle `"confirm": true` świadomie.
 
 ---
 
@@ -108,16 +106,16 @@ Efekt na przykładzie: gdy `RISKY_ACTIONS=` jest puste, nic nie wymaga potwierdz
 
 To jest sedno sprawy. Aplikacja **nie wie, czym fizycznie jest robot**. Oczekuje tylko, że robot (a właściwie jego firmware albo mała aplikacja towarzysząca — na Raspberry Pi, ESP32, komputerze przemysłowym, czymkolwiek) wystawi **trzy endpointy HTTP**:
 
-### a) `GET /telemetry` — robot melduje stan (polling)
+### a) `GET /telemetry` — robot melduje stan (pobierany na żądanie)
 
-Aplikacja odpytuje go 5× na sekundę (`ROBOT_POLL_HZ`). Robot odpowiada np.:
+Aplikacja woła go wtedy, gdy go potrzebuje: raz przy planowaniu (do promptu LLM), przed każdym krokiem wykonania oraz dla `GET /state` i `GET /health`. Robot odpowiada np.:
 
 ```json
 { "motion_status": "moving", "pose": {"x_m": 1.2, "y_m": 0, "heading_deg": 45},
   "battery_pct": 55, "obstacle_distance_m": 0.8 }
 ```
 
-Wymagane jest tylko `motion_status` (`idle|moving|turning|stopped|error`) — reszta jest opcjonalna, bo nie każdy robot ma GPS czy czujniki. Nieznane wartości mapują się na `error`. Te dane napędzają: `GET /state` dla Twojej aplikacji, prompt LLM ("telemetria only, niczego nie wymyślaj") i **kontrolę świeżości** — jeśli robot przestaje odpowiadać na ~3 odpytania z rzędu, aplikacja uznaje łączę za zerwaną i przerywa wykonywany plan (bezpieczny stop).
+Wymagane jest tylko `motion_status` (`idle|moving|turning|stopped|error`) — reszta jest opcjonalna, bo nie każdy robot ma GPS czy czujniki. Nieznane wartości mapują się na `error`. Te dane napędzają `GET /state` dla Twojej aplikacji i prompt LLM ("telemetria only, niczego nie wymyślaj"). Przed każdym krokiem wykonania aplikacja pobiera świeżą próbkę: **jeśli robot nie odpowiada**, plan jest przerywany (bezpieczny stop).
 
 ### b) `POST /command` — aplikacja wysyła JEDEN krok
 
@@ -154,7 +152,7 @@ GET /commands/{id}          ◄───  status: "completed"
 (cyklicznie, aż status końcowy)
 ```
 
-Statusy końcowe: `completed` / `failed` (błąd kroku lub telemetrii) / `rejected` (warstwa bezpieczeństwa) / `stopped` (e-stop) / `clarification` (model pyta — odpowiedź wysyłasz jako NOWĄ komendę, a kontekst wcześniejszego pytania jest przenoszony automatycznie). Tylko jedna komenda naraz — druga dostaje 409.
+Statusy końcowe: `completed` / `failed` (błąd kroku lub niedostępna telemetria) / `rejected` (warstwa bezpieczeństwa) / `stopped` (e-stop). Niejednoznaczne komendy nie zatrzymują przepływu — model sam decyduje o najbardziej rozsądnej interpretacji. Tylko jedna komenda naraz — druga dostaje 409.
 
 ---
 
@@ -166,12 +164,11 @@ Statusy końcowe: `completed` / `failed` (błąd kroku lub telemetrii) / `reject
 | **uv** | Menedżer pakietów/środowiska (`uv sync`, `uv run robotctl`) — nigdy pip |
 | **FastAPI** | Framework REST API (walidacja ciała żądań, routing) |
 | **uvicorn** | Serwer ASGI obsługujący HTTP; przejmuje sygnały Ctrl+C/SIGTERM → bezpieczne zamknięcie |
-| **pydantic / pydantic-settings** | Schemy kontraktów (koperta odpowiedzi, profil, telemetria — wszystko `extra="forbid"`, nic nadmiarowego nie przechodzi) + konfiguracja z `.env` |
-| **openai (AsyncOpenAI)** | Klient do **dowolnego** endpointu zgodnego z OpenAI — vLLM, Ollama, LM Studio… |
-| **httpx** | Asynchroniczny klient HTTP do rozmowy z robotem (+ wstrzykiwany MockTransport w testach) |
-| **pytest** | 137 testów bez żadnego sprzętu (fałszywy adapter, fałszywy robot HTTP) |
+| **pydantic** | Schemy kontraktów (koperta odpowiedzi, profil, telemetria — wszystko `extra="forbid"`, nic nadmiarowego nie przechodzi) |
+| **httpx** | Asynchroniczny klient HTTP do rozmowy z robotem **i z LLM** (goły POST na `/chat/completions`, + wstrzykiwany MockTransport w testach) |
+| **pytest** | ~109 testów bez żadnego sprzętu (fałszywy adapter, fałszywy robot HTTP, fałszywy serwer LLM) |
 
-Brak bazy danych — stan komend w pamięci, log interakcji z LLM jako JSONL (`logs/llm.jsonl`, widoczny przez `GET /logs`). Całość nasłuchuje **tylko na 127.0.0.1** (loopback) — z zewnątrz nieosiągalne.
+Brak bazy danych — stan komend w pamięci. Konfiguracja czytana z `.env`/zmiennych środowiskowych ręcznie (kilka linii, bez dodatkowej zależności). Całość nasłuchuje **tylko na 127.0.0.1** (loopback) — z zewnątrz nieosiągalne.
 
 Struktura kodu (`src/robotctl/`): `core.py` (ustawienia, uniwersalna koperta, profil robota z walidacją, generowanie promptu i schemy, bramka bezpieczeństwa) → `runtime.py` (most HTTP do robota, telemetria, rozmowa z LLM, wykonanie krok po kroku) → `service.py` (endpointy REST + start serwisu).
 
@@ -180,8 +177,8 @@ Struktura kodu (`src/robotctl/`): `core.py` (ustawienia, uniwersalna koperta, pr
 ## 8. Co się dzieje w skrajnych przypadkach
 
 - **Brak profilu**: `POST /commands` → 422 "wgraj profil przez POST /profile". Serwis działa.
-- **Brak robota** (`ROBOT_BASE_URL` puste): serwis startuje normalnie, `/health` → `ok:false`, planowanie działa, wykonanie **bezpiecznie zawodzi** ("telemetry stale or robot disconnected").
-- **Robot pada w trakcie**: telemetria przestaje być świeża → plan przerywany → wysyłany stop → status `failed`.
+- **Brak robota** (`ROBOT_BASE_URL` puste): serwis startuje normalnie, `/health` → `ok:false`, planowanie działa, wykonanie **bezpiecznie zawodzi** ("telemetry unavailable or robot disconnected").
+- **Robot pada w trakcie**: pobranie telemetrii przed kolejnym krokiem zawodzi → plan przerywany → wysyłany stop → status `failed`.
 - **LLM kłamie** (wymyśla akcję "teleportuj"): parser to wyłapuje → automatyczny retry z korektą → jeśli dalej źle → `failed`, robot nietknięty.
 - **LLM każe skoczyć 20 m przy limicie 5 m**: odrzucenie albo (zwykle) model sam dzieli na plan zgodnie z zasadą "split, don't ask".
 

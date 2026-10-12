@@ -55,19 +55,15 @@ Without a robot configured the service still runs (planning, profile upload,
 validation); `/health` reports `ok:false` and execution fails safely until
 the robot is reachable.
 
-Every LLM interaction is appended to `logs/llm.jsonl` (configurable via
-`LLM_LOG_FILE`) and readable at `GET /logs`.
-
 ## REST API (loopback only)
 
 | Endpoint | Purpose |
 | --- | --- |
 | `POST /profile` | Upload/replace the robot profile (validated, persisted, hot-applied) |
 | `GET /profile` | Current profile |
-| `POST /commands` | Natural language (or manual `/do <action> …`) → `{"id", "status"}` (202); 409 if busy; risky plans need `"confirm": true` |
+| `POST /commands` | Natural language → `{"id", "status"}` (202); 409 if busy |
 | `GET /commands/{id}` | Command status, plan and per-step results |
-| `GET /state` | Latest robot telemetry |
-| `GET /logs` | Recent LLM planner interactions |
+| `GET /state` | Live robot telemetry (fetched on demand) |
 | `POST /stop` | Emergency stop — bypasses the LLM immediately |
 | `GET /health` | Robot link + profile status |
 
@@ -81,16 +77,15 @@ without adding authentication first.
    ranges. Unknown actions or parameters are rejected before execution.
 2. **Never trust the LLM** — strict envelope parsing, per-profile step
    validation at parse time (with automatic corrective retries), and a
-   deterministic safety layer as defense in depth.
-3. **Step-by-step execution** — fresh telemetry is required between steps;
-   stale telemetry or a disconnect aborts the plan with a stop command.
+   deterministic safety layer as defense in depth. Ambiguous commands are
+   decided by the model with conservative values, never asked back.
+3. **Step-by-step execution** — a telemetry fetch is required between steps;
+   an unreachable or disconnected robot aborts the plan with a stop command.
 4. **Timeouts** — every step runs under a timeout; on expiry the robot is
    told to stop.
 5. **Emergency stop** — `POST /stop` cancels the running task, cancels the
    in-flight robot request and fires the robot's stop endpoint; never routed
    through the LLM.
-6. **Confirmation** — actions listed in `RISKY_ACTIONS` are rejected unless
-   the submitting request sets `"confirm": true`.
 
 ## Testing
 
@@ -100,6 +95,6 @@ uv run pytest
 
 The suite covers profile validation and step checking, schema rejection of
 invalid envelopes, planner retries and response-format fallbacks, executor
-behaviour (timeouts, stale telemetry, e-stop mid-plan, confirmation gate,
-busy executor), the HTTP bridge adapter against a stubbed robot, and the REST
-endpoints — all without hardware.
+behaviour (timeouts, dead telemetry, e-stop mid-plan, busy executor), the
+HTTP bridge adapter against a stubbed robot, and the REST endpoints — all
+without hardware.

@@ -6,15 +6,14 @@ import asyncio
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from robotctl.core import ProfileManager, RobotProfile, parse_profile
-from robotctl.core import ActionStep, PlanResponse, Pose, Telemetry
-from robotctl.runtime import AdapterError, Executor, PlannerError, StateMonitor
+from robotctl.core import ActionStep, PlanResponse, Pose, ProfileManager, RobotProfile, Telemetry, parse_profile
+from robotctl.runtime import AdapterError, Executor, PlannerError
 
 if TYPE_CHECKING:
     from robotctl.core import Settings
-    from robotctl.runtime import Command, CommandStatus, RobotAdapter
+    from robotctl.runtime import Command
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +87,7 @@ def multi_plan(*steps: object) -> PlanResponse:
 
 
 class FakePlanner:
-    """PlanProvider double: returns a canned plan (or raises PlannerError)."""
+    """Plan-provider double: returns a canned plan (or raises PlannerError)."""
 
     def __init__(self, plan: PlanResponse | None = None, error: str | None = None) -> None:
         self.canned = plan
@@ -104,7 +103,7 @@ class FakePlanner:
 
 
 class FakeAdapter:
-    """RobotAdapter double: records executed steps, injects failures on demand."""
+    """Robot-adapter double: records executed steps, injects failures on demand."""
 
     def __init__(
         self,
@@ -113,8 +112,7 @@ class FakeAdapter:
         hang_on: tuple[str, ...] = (),
         execute_delay_s: float = 0.0,
     ) -> None:
-        self._connected = False
-        self._link_up = True  # False simulates a dead/stale telemetry link
+        self._link_up = True  # False simulates an unreachable robot
         self._halted = False
         self.executed: list[ActionStep] = []
         self.stops = 0
@@ -122,13 +120,19 @@ class FakeAdapter:
         self.hang_on = set(hang_on)
         self.execute_delay_s = execute_delay_s
 
-    # -- RobotAdapter API ------------------------------------------------------
+    # -- adapter API ------------------------------------------------------------
 
-    async def connect(self) -> None:
-        self._connected = True
-
-    async def disconnect(self) -> None:
-        self._connected = False
+    async def fetch_telemetry(self) -> Telemetry | None:
+        if not self._link_up:
+            return None
+        return Telemetry(
+            timestamp=time.time(),
+            monotonic=time.monotonic(),
+            connected=True,
+            motion_status="idle",
+            pose=self._pose(),
+            battery_pct=100.0,
+        )
 
     async def execute(self, action: ActionStep) -> None:
         self.executed.append(action)
@@ -143,27 +147,10 @@ class FakeAdapter:
         self._halted = True
         self.stops += 1
 
-    def telemetry(self) -> Telemetry | None:
-        if not self._connected:
-            return None
-        if not self._link_up:
-            return Telemetry(
-                timestamp=time.time(),
-                monotonic=time.monotonic() - 99,  # hopelessly stale
-                connected=False,
-                motion_status="error",
-                pose=self._pose(),
-            )
-        return Telemetry(
-            timestamp=time.time(),
-            monotonic=time.monotonic(),
-            connected=True,
-            motion_status="idle",
-            pose=self._pose(),
-            battery_pct=100.0,
-        )
+    async def disconnect(self) -> None:
+        self._link_up = False
 
-    # -- test controls -----------------------------------------------------------
+    # -- test controls ------------------------------------------------------------
 
     def _pose(self) -> Pose:
         return Pose(x_m=0.0, y_m=0.0, heading_deg=0.0)
@@ -179,29 +166,24 @@ class FakeAdapter:
 @asynccontextmanager
 async def stack(
     settings: "Settings",
-    planner: FakePlanner,
-    adapter: "RobotAdapter | None" = None,
+    planner: Any,
+    adapter: Any | None = None,
     profiles: ProfileManager | None = None,
-) -> AsyncIterator[tuple[Executor, RobotAdapter, StateMonitor]]:
-    """Connected adapter + started monitor + executor, torn down safely."""
+) -> AsyncIterator[tuple[Executor, Any]]:
+    """Executor over a fake adapter + profiles, torn down safely."""
     adapter = adapter if adapter is not None else FakeAdapter()
     profiles = profiles if profiles is not None else make_profiles()
-    await adapter.connect()
-    monitor = StateMonitor(adapter, settings.telemetry_max_age_s)
-    monitor.start()
-    await monitor.wait_for_telemetry(timeout_s=5.0)
-    executor = Executor(settings, adapter, monitor, planner, profiles)
+    executor = Executor(settings, adapter, planner, profiles)
     try:
-        yield executor, adapter, monitor
+        yield executor, adapter
     finally:
         executor.stop()
-        await monitor.stop()
         await adapter.disconnect()
 
 
 async def wait_for_status(
     command: "Command",
-    *statuses: "CommandStatus",
+    *statuses: str,
     timeout_s: float = 5.0,
 ) -> None:
     deadline = time.monotonic() + timeout_s
@@ -210,6 +192,6 @@ async def wait_for_status(
             return
         await asyncio.sleep(0.02)
     raise AssertionError(
-        f"timed out waiting for {[s.value for s in statuses]}; "
-        f"status is {command.status.value} (error: {command.error})"
+        f"timed out waiting for {list(statuses)}; "
+        f"status is {command.status} (error: {command.error})"
     )

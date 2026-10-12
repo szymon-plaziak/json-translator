@@ -2,7 +2,7 @@
 
 Action payloads are deliberately NOT validated here — they come from the
 robot profile (see test_profile.py / test_executor.py). The envelope only
-pins version, mode, step count and the clarification rules.
+pins version, mode and the step count.
 """
 
 from __future__ import annotations
@@ -41,25 +41,20 @@ def test_wrong_version_is_rejected():
         PlanResponse.model_validate({**plan_json(), "version": 2})
 
 
+def test_unknown_mode_is_rejected():
+    """There is no clarification mode: the model must decide, not ask."""
+    with pytest.raises(ValidationError):
+        PlanResponse.model_validate({**plan_json(), "mode": "clarification"})
+
+
 def test_action_mode_requires_steps():
     with pytest.raises(ValidationError):
         PlanResponse.model_validate({"version": 1, "mode": "action", "steps": []})
 
 
-def test_clarification_requires_question():
+def test_plan_mode_requires_steps():
     with pytest.raises(ValidationError):
-        PlanResponse.model_validate({"version": 1, "mode": "clarification", "steps": []})
-
-
-def test_clarification_must_not_carry_steps():
-    payload = {
-        "version": 1,
-        "mode": "clarification",
-        "question": "which way?",
-        "steps": [{"action": "stop"}],
-    }
-    with pytest.raises(ValidationError):
-        PlanResponse.model_validate(payload)
+        PlanResponse.model_validate({"version": 1, "mode": "plan", "steps": []})
 
 
 def test_action_step_is_profile_agnostic():
